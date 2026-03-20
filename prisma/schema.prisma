@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Trade {
+  id              String   @default(uuid())
+  signature       String   @unique
+  timestamp       DateTime
+  slot            BigInt
+  dex             String
+  pair            String
+  tokenIn         String
+  tokenOut        String
+  amountIn        Decimal
+  amountOut       Decimal
+  amountInUsd     Decimal?
+  amountOutUsd    Decimal?
+  expectedOut     Decimal?
+  slippageBps     Decimal?
+  priceImpact     Decimal?
+  executionTimeMs Int?
+  executionQuality Int?
+  wallet          String
+  isSession       Boolean  @default(false)
+  sessionPda      String?
+  fee             Decimal?
+  createdAt       DateTime @default(now())
+
+  @@id([id, timestamp])
+  @@index([timestamp])
+  @@index([wallet])
+  @@index([dex])
+  @@index([pair])
+  @@index([signature])
+}
+
+model BlockMetric {
+  id            String   @default(uuid())
+  timestamp     DateTime
+  slot          BigInt   @unique
+  blockTimeMs   Int
+  tps           Int
+  totalTxns     Int
+  failedTxns    Int
+  successRate   Decimal
+  leader        String?
+  createdAt     DateTime @default(now())
+
+  @@id([id, timestamp])
+  @@index([timestamp])
+}
+
+model MEVEvent {
+  id              String   @default(uuid())
+  timestamp       DateTime
+  slot            BigInt
+  eventType       String
+  severity        String
+  relatedTxs      String[]
+  estimatedProfit Decimal?
+  victimWallet    String?
+  description     String?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  @@id([id, timestamp])
+  @@index([timestamp])
+  @@index([eventType])
+}
+
+model CrossChainComparison {
+  id                 String   @id @default(uuid())
+  timestamp          DateTime
+  pair               String
+  fogoPrice          Decimal
+  solanaPrice        Decimal
+  fogoSlippageBps    Decimal?
+  solanaSlippageBps  Decimal?
+  fogoLatencyMs      Int?
+  solanaLatencyMs    Int?
+  fogoBetter         Boolean
+  improvementBps     Decimal
+  createdAt          DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([pair])
+}
+
+model BridgeTransfer {
+  id               String   @id @default(uuid())
+  operationId      String   @unique
+  timestamp        DateTime
+  sourceChain      String
+  destChain        String
+  token            String
+  amount           Decimal
+  amountUsd        Decimal?
+  senderAddress    String
+  recipientAddress String
+  status           String
+  txHashSource     String?
+  txHashTarget     String?
+  createdAt        DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([sourceChain, destChain])
+}
+
+model LendingPosition {
+  id               String   @id @default(uuid())
+  protocol         String
+  wallet           String
+  collateralToken  String
+  collateralAmount Decimal
+  borrowToken      String
+  borrowAmount     Decimal
+  healthFactor     Decimal
+  liquidationPrice Decimal?
+  lastUpdated      DateTime
+  createdAt        DateTime @default(now())
+
+  @@index([wallet])
+  @@index([healthFactor])
+}
+
+model NetworkSnapshot {
+  id              String   @default(uuid())
+  timestamp       DateTime
+  chain           String
+  avgBlockTimeMs  Decimal
+  avgTps          Decimal
+  totalTxs24h     BigInt
+  activeValidators Int
+  tvlUsd          Decimal?
+  createdAt       DateTime @default(now())
+
+  @@id([id, timestamp])
+  @@index([timestamp, chain])
+}
+
+model TokenPrice {
+  id        String   @default(uuid())
+  timestamp DateTime
+  token     String
+  symbol    String
+  chain     String
+  priceUsd  Decimal
+  volume24h Decimal?
+  liquidity Decimal?
+  change24h Decimal?
+  source    String
+  createdAt DateTime @default(now())
+
+  @@id([id, timestamp])
+  @@index([timestamp, token, chain])
+}
