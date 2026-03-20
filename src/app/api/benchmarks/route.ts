@@ -114,7 +114,7 @@ async function fetchBenchmarkData(): Promise<BenchmarkData> {
   const sub50msStreakActive = streakBlocks.length > 0 && streakBlocks[0].blockTimeMs < 50;
 
   // Format block time history for charts
-  const blockTimeHistory = history.map((h) => ({
+  const blockTimeHistory = history.map((h: { bucket: Date; avg_bt: number }) => ({
     time: h.bucket.toISOString(),
     value: Math.round(h.avg_bt * 100) / 100,
   }));
