@@ -137,7 +137,7 @@ async function fetchComparisonData(): Promise<ComparisonData> {
     : 0;
 
   const fogoSlippageBps = fogoAvgSlippage?._avg?.slippageBps
-    ? fogoAvgSlippage._avg.slippageBps.toNumber()
+    ? Math.max(0, fogoAvgSlippage._avg.slippageBps.toNumber())
     : 0;
 
   const fogoTotalTrades = fogoTradeCountsResult?.total ?? 0;
@@ -224,7 +224,7 @@ async function fetchComparisonData(): Promise<ComparisonData> {
 
     if (fogoHourlySlippage && fogoHourlySlippage.length > 0) {
       history = fogoHourlySlippage.map((row) => {
-        const fogoSlip = row.avg_slip ? Number(row.avg_slip) : 0;
+        const fogoSlip = row.avg_slip ? Math.max(0, Number(row.avg_slip)) : 0;
         return {
           time: row.bucket instanceof Date ? row.bucket.toISOString() : String(row.bucket),
           fogoSlippage: +fogoSlip.toFixed(2),

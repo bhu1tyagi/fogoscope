@@ -127,9 +127,9 @@ export async function GET(
           isSession: t.isSession,
         }));
 
-        const avgSlippageBps = agg._avg.slippageBps !== null ? Number(agg._avg.slippageBps) : 0;
-        const worstSlippageBps = agg._max.slippageBps !== null ? Number(agg._max.slippageBps) : 0;
-        const bestSlippageBps = agg._min.slippageBps !== null ? Number(agg._min.slippageBps) : 0;
+        const avgSlippageBps = agg._avg.slippageBps !== null ? Math.max(0, Number(agg._avg.slippageBps)) : 0;
+        const worstSlippageBps = agg._max.slippageBps !== null ? Math.max(0, Number(agg._max.slippageBps)) : 0;
+        const bestSlippageBps = agg._min.slippageBps !== null ? Math.max(0, Number(agg._min.slippageBps)) : 0;
         const totalVolumeUsd = agg._sum.amountInUsd !== null ? Number(agg._sum.amountInUsd) : 0;
         const totalTrades = agg._count;
         const preferredDex = topDex.length > 0 ? topDex[0].dex : "";
@@ -164,7 +164,7 @@ export async function GET(
         // Map slippage history to TimeSeries
         const slippageHistory: TimeSeries[] = (slippageHistoryRaw ?? []).map((row) => ({
           time: new Date(row.bucket).toISOString(),
-          value: +Number(row.avg_slippage).toFixed(2),
+          value: Math.max(0, +Number(row.avg_slippage).toFixed(2)),
         }));
 
         return {

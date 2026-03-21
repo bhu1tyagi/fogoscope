@@ -17,7 +17,20 @@ for (const [mint, sym] of Object.entries(MINT_SYMBOLS)) {
 export async function backfillSlippage(): Promise<void> {
   console.log("[BackfillSlippage] Starting...");
 
-  // Build a price map: symbol (lowercase) → latest USD price from DB
+  // Step 1: Clamp any existing negative slippage/priceImpact values to 0.
+  // These were written before the clamping fix was added.
+  try {
+    const clamped = await prisma.$executeRaw`
+      UPDATE "Trade"
+      SET "slippageBps" = 0, "priceImpact" = 0
+      WHERE "slippageBps" < 0 OR "priceImpact" < 0
+    `;
+    console.log(`[BackfillSlippage] Clamped ${clamped} trades with negative slippage to 0`);
+  } catch (err) {
+    console.error("[BackfillSlippage] Failed to clamp negatives:", err);
+  }
+
+  // Step 2: Compute slippage for trades that still have NULL slippageBps.
   const priceMap = new Map<string, number>();
   for (const symbol of Object.values(MINT_SYMBOLS)) {
     try {
@@ -39,7 +52,7 @@ export async function backfillSlippage(): Promise<void> {
   );
 
   if (priceMap.size < 2) {
-    console.log("[BackfillSlippage] Not enough prices yet, skipping");
+    console.log("[BackfillSlippage] Not enough prices yet, skipping NULL backfill");
     return;
   }
 
@@ -69,7 +82,6 @@ export async function backfillSlippage(): Promise<void> {
     let amountInUsd = trade.amountInUsd?.toNumber() ?? null;
     let amountOutUsd = trade.amountOutUsd?.toNumber() ?? null;
 
-    // Try to compute USD amounts from prices if missing
     if (amountInUsd === null && inSymbol) {
       const price = priceMap.get(inSymbol);
       if (price) amountInUsd = trade.amountIn.toNumber() * price;

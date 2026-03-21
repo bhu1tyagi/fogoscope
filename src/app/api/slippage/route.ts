@@ -143,34 +143,29 @@ async function fetchSlippageData(timeRange: string): Promise<SlippageData> {
       ),
     ]);
 
-  // Extract stats with fallback to 0
   const stats = statsRows[0];
-  const avgSlippageBps = stats?.avg != null ? Number(stats.avg) : 0;
-  const medianSlippageBps = stats?.median != null ? Number(stats.median) : 0;
-  const p95SlippageBps = stats?.p95 != null ? Number(stats.p95) : 0;
+  const avgSlippageBps = stats?.avg != null ? Math.max(0, Number(stats.avg)) : 0;
+  const medianSlippageBps = stats?.median != null ? Math.max(0, Number(stats.median)) : 0;
+  const p95SlippageBps = stats?.p95 != null ? Math.max(0, Number(stats.p95)) : 0;
 
-  // Map time series
   const timeSeries: TimeSeries[] = timeSeriesRows.map((row) => ({
     time: new Date(row.bucket).toISOString(),
-    value: row.avg_slippage != null ? Number(row.avg_slippage) : 0,
+    value: row.avg_slippage != null ? Math.max(0, Number(row.avg_slippage)) : 0,
   }));
 
-  // Map distribution
   const distribution = distributionRows.map((row) => ({
     bucket: row.bucket,
     count: Number(row.count),
   }));
 
-  // Map by pair
   const byPair = byPairRows.map((row) => ({
     pair: row.pair,
-    avgSlippage: row.avg_slippage != null ? Number(row.avg_slippage) : 0,
+    avgSlippage: row.avg_slippage != null ? Math.max(0, Number(row.avg_slippage)) : 0,
   }));
 
-  // Map by size
   const bySize = bySizeRows.map((row) => ({
     size: Number(row.size_bucket),
-    slippage: row.avg_slippage != null ? Number(row.avg_slippage) : 0,
+    slippage: row.avg_slippage != null ? Math.max(0, Number(row.avg_slippage)) : 0,
   }));
 
   return {

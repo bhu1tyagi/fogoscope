@@ -94,7 +94,7 @@ async function fetchMetrics(): Promise<DashboardMetrics> {
   const totalTrades24h = tradeAgg._count ?? 0;
   const avgSlippageBps =
     tradeAgg._avg.slippageBps !== null
-      ? tradeAgg._avg.slippageBps.toNumber()
+      ? Math.max(0, tradeAgg._avg.slippageBps.toNumber())
       : 0;
   const volume24h =
     tradeAgg._sum.amountInUsd !== null
