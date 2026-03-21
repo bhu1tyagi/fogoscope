@@ -13,6 +13,14 @@ export type MEVType =
 
 export type Severity = "none" | "low" | "medium" | "high";
 
+/**
+ * Prisma WHERE filter to exclude legacy/deprecated MEV events from active queries.
+ * Use this in every MEVEvent query to ensure only valid detections are shown.
+ */
+export const VALID_MEV_WHERE = {
+  severity: { notIn: ["none", "deprecated"] as string[] },
+};
+
 /** A single trade within a block, used as input to MEV detectors. */
 export interface TradeInBlock {
   /** Transaction signature / hash. */
@@ -50,6 +58,13 @@ export interface MEVDetectionResult {
   /** Human-readable explanation. */
   description: string;
 }
+
+// ── Thresholds ──────────────────────────────────────────────────────────────
+
+const MIN_FRONTRUN_TARGET_USD = 50;
+const MIN_FRONTRUN_SIZE_RATIO = 3;
+const MIN_SANDWICH_VICTIM_USD = 20;
+const MIN_ARBITRAGE_PROFIT_USD = 5;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +104,8 @@ function groupByPair(
  *   3. Attacker places the opposite trade AFTER the victim (backrun).
  *   4. Attacker wallet is the same for both front and back trades.
  *   5. Attacker wallet differs from the victim wallet.
+ *   6. Victim trade is large enough to create meaningful price impact.
+ *   7. Attacker extracted measurable profit via the price movement.
  */
 export function detectSandwich(
   trades: TradeInBlock[]
@@ -100,32 +117,30 @@ export function detectSandwich(
   const pairGroups = groupByPair(trades);
 
   for (const [pairAddress, pairTrades] of pairGroups) {
-    // Need at least 3 trades on the same pair to form a sandwich
     if (pairTrades.length < 3) continue;
 
-    // Sort by position in block
     const sorted = [...pairTrades].sort((a, b) => a.txIndex - b.txIndex);
 
-    // Sliding window: check every consecutive triple
     for (let i = 0; i <= sorted.length - 3; i++) {
       const front = sorted[i];
       const victim = sorted[i + 1];
       const back = sorted[i + 2];
 
-      // Same attacker wallet for front and back, different from victim
       if (front.wallet !== back.wallet) continue;
       if (front.wallet === victim.wallet) continue;
-
-      // Front and back should be opposite sides
       if (front.side === back.side) continue;
-
-      // Front side should match victim's side (attacker buys before victim buys)
       if (front.side !== victim.side) continue;
 
-      // Estimate profit: price difference * victim amount
+      if (victim.amountUsd < MIN_SANDWICH_VICTIM_USD) continue;
+
+      if (front.price <= 0 || back.price <= 0) continue;
       const priceDelta = Math.abs(back.price - front.price);
+      if (priceDelta <= 0) continue;
+
       const estimatedProfitUsd =
-        priceDelta > 0 ? (priceDelta / front.price) * front.amountUsd : 0;
+        (priceDelta / front.price) * front.amountUsd;
+
+      if (estimatedProfitUsd < 0.5) continue;
 
       results.push({
         type: "sandwich",
@@ -151,13 +166,16 @@ export function detectSandwich(
 // ── Frontrun Detection ───────────────────────────────────────────────────────
 
 /**
- * Detect frontrunning: a trade placed immediately before a larger trade
- * on the same pair and same side, by a different wallet.
+ * Detect frontrunning: a trade placed immediately before a significantly
+ * larger trade on the same pair and same side, by a different wallet,
+ * with measurable price impact.
  *
- * Heuristic:
+ * Heuristic (strict):
  *   - Two consecutive same-pair, same-side trades from different wallets.
- *   - The first trade is smaller than the second (front-runs the larger order).
- *   - The frontrunner's trade is positioned immediately before the target.
+ *   - Target trade is large enough to be worth frontrunning (≥$50).
+ *   - Size ratio ≥ 3x (suspect is meaningfully smaller).
+ *   - Measurable price difference between the two executions.
+ *   - Estimated profit > $0.
  */
 export function detectFrontrun(
   trades: TradeInBlock[]
@@ -177,24 +195,21 @@ export function detectFrontrun(
       const suspect = sorted[i];
       const target = sorted[i + 1];
 
-      // Different wallets
       if (suspect.wallet === target.wallet) continue;
-
-      // Same side (both buys or both sells)
       if (suspect.side !== target.side) continue;
-
-      // Suspect trade is smaller than the target (front-running a big order)
       if (suspect.amountUsd >= target.amountUsd) continue;
 
-      // Target should be at least 2x the suspect's size for meaningful frontrun
-      if (target.amountUsd < suspect.amountUsd * 2) continue;
+      if (target.amountUsd < MIN_FRONTRUN_TARGET_USD) continue;
+      if (target.amountUsd < suspect.amountUsd * MIN_FRONTRUN_SIZE_RATIO) continue;
 
-      // Estimate the price advantage the frontrunner obtained
+      if (suspect.price <= 0 || target.price <= 0) continue;
       const priceSlippage = Math.abs(target.price - suspect.price);
+      if (priceSlippage <= 0) continue;
+
       const estimatedProfitUsd =
-        priceSlippage > 0
-          ? (priceSlippage / suspect.price) * suspect.amountUsd
-          : 0;
+        (priceSlippage / suspect.price) * suspect.amountUsd;
+
+      if (estimatedProfitUsd < 0.5) continue;
 
       results.push({
         type: "frontrun",
@@ -221,10 +236,11 @@ export function detectFrontrun(
  * Detect potential arbitrage: a single wallet executing opposite-side trades
  * on different pairs within the same block (cross-pair arb).
  *
- * Heuristic:
+ * Heuristic (strict):
  *   - Same wallet, same block, different pairs.
  *   - Buy on one pair and sell on another (round-trip).
- *   - Net positive USD outcome suggests profit extraction.
+ *   - Net positive USD profit above $5 threshold.
+ *   - Sells exceed buys (sell - buy) indicating profit extraction.
  */
 export function detectArbitrage(
   trades: TradeInBlock[]
@@ -233,7 +249,6 @@ export function detectArbitrage(
 
   if (trades.length < 2) return results;
 
-  // Group trades by wallet
   const walletGroups = new Map<string, TradeInBlock[]>();
   for (const t of trades) {
     const group = walletGroups.get(t.wallet) ?? [];
@@ -242,41 +257,36 @@ export function detectArbitrage(
   }
 
   for (const [wallet, walletTrades] of walletGroups) {
-    // Need at least 2 trades from the same wallet
     if (walletTrades.length < 2) continue;
 
-    // Check if the wallet traded on multiple pairs with opposite sides
     const pairs = new Set(walletTrades.map((t) => t.pairAddress));
     if (pairs.size < 2) continue;
 
     const buys = walletTrades.filter((t) => t.side === "buy");
     const sells = walletTrades.filter((t) => t.side === "sell");
 
-    // Must have both buys and sells across different pairs
     if (buys.length === 0 || sells.length === 0) continue;
 
     const buyPairs = new Set(buys.map((t) => t.pairAddress));
     const sellPairs = new Set(sells.map((t) => t.pairAddress));
 
-    // The buys and sells should be on different pairs (cross-pair arb)
     const crossPair = [...buyPairs].some((p) => !sellPairs.has(p)) ||
                       [...sellPairs].some((p) => !buyPairs.has(p));
     if (!crossPair) continue;
 
     const totalBuyUsd = buys.reduce((s, t) => s + t.amountUsd, 0);
     const totalSellUsd = sells.reduce((s, t) => s + t.amountUsd, 0);
-    const estimatedProfitUsd = Math.abs(totalSellUsd - totalBuyUsd);
 
-    // Only flag if there's meaningful profit (>$1)
-    if (estimatedProfitUsd < 1) continue;
+    const estimatedProfitUsd = totalSellUsd - totalBuyUsd;
+    if (estimatedProfitUsd < MIN_ARBITRAGE_PROFIT_USD) continue;
 
-    const allTxs = walletTrades.map((t) => t.txHash);
+    const allTxs = [...new Set(walletTrades.map((t) => t.txHash))];
 
     results.push({
       type: "arbitrage",
       severity: classifySeverity(estimatedProfitUsd),
       targetTx: allTxs[0],
-      victimWallet: null, // Arbitrage has no victim
+      victimWallet: null,
       attackerTxs: allTxs.slice(1),
       estimatedProfitUsd: Math.round(estimatedProfitUsd * 100) / 100,
       description:

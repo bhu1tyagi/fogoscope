@@ -4,6 +4,7 @@ import prisma from "@/lib/db/prisma";
 import { fogoConnection, solanaConnection } from "@/lib/blockchain/connection";
 import { getOrFetch, CacheTier } from "@/lib/redis/cache";
 import type { ComparisonData } from "@/types/metrics";
+import { VALID_MEV_WHERE } from "@/lib/analytics/mev";
 
 export const dynamic = "force-dynamic";
 
@@ -72,10 +73,10 @@ async function fetchComparisonData(): Promise<ComparisonData> {
       return { total, bestExec };
     }),
 
-    // 5. Fogo MEV event count (24h)
+    // 5. Fogo MEV event count (24h, excluding deprecated)
     safeDb(() =>
       prisma.mEVEvent.count({
-        where: { timestamp: { gte: twentyFourHoursAgo } },
+        where: { timestamp: { gte: twentyFourHoursAgo }, ...VALID_MEV_WHERE },
       })
     ),
 

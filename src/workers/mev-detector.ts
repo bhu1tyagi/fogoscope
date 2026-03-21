@@ -1,5 +1,6 @@
 import { BaseWorker } from "./base-worker";
 import { prisma } from "../lib/db/prisma";
+import { MINT_SYMBOLS } from "../lib/blockchain/program-ids";
 import {
   detectSandwich,
   detectFrontrun,
@@ -8,36 +9,45 @@ import {
   type MEVDetectionResult,
 } from "../lib/analytics/mev";
 
+const REVERSE_MINT_SYMBOLS: Record<string, string> = {};
+for (const [address, symbol] of Object.entries(MINT_SYMBOLS)) {
+  REVERSE_MINT_SYMBOLS[symbol] = address;
+}
+
+const MIN_TRADE_USD = 5;
+const MIN_PROFIT_USD = 0.5;
+
 /**
  * Scans recent trades grouped by slot (block) for MEV patterns
  * (sandwich attacks, frontrunning) and writes detected events to MEVEvent.
  *
  * Runs every 10 seconds. On each cycle:
  * 1. Fetch trades from the last 2 minutes grouped by slot
- * 2. For each slot with 2+ trades, run sandwich and frontrun detectors
+ * 2. For each slot with 2+ usable trades, run sandwich and frontrun detectors
  * 3. Write new MEVDetectionResults to MEVEvent table (skip duplicates)
  */
 export class MEVDetector extends BaseWorker {
   name = "MEVDetector";
   intervalMs = 10_000;
 
-  /** Track the latest slot we've fully scanned to avoid re-processing */
   private lastScannedSlot: bigint = BigInt(0);
+  private hasRunCleanup = false;
 
   async execute(): Promise<void> {
-    // 1. Fetch recent trades grouped by slot — only slots with 2+ trades are interesting
+    if (!this.hasRunCleanup) {
+      await this.cleanupLegacyFalsePositives();
+      this.hasRunCleanup = true;
+    }
     const recentTrades = await prisma.trade.findMany({
       where: {
         slot: { gt: this.lastScannedSlot },
       },
-      orderBy: { slot: "asc" },
-      // Limit to prevent huge queries on first run
+      orderBy: [{ slot: "asc" }, { timestamp: "asc" }],
       take: 5000,
     });
 
     if (recentTrades.length === 0) return;
 
-    // 2. Group trades by slot
     const slotGroups = new Map<bigint, typeof recentTrades>();
     for (const trade of recentTrades) {
       const group = slotGroups.get(trade.slot) ?? [];
@@ -45,55 +55,61 @@ export class MEVDetector extends BaseWorker {
       slotGroups.set(trade.slot, group);
     }
 
-    // Update bookmark to highest slot we've seen
     const maxSlot = recentTrades[recentTrades.length - 1].slot;
     this.lastScannedSlot = maxSlot;
 
     let totalDetected = 0;
     let slotsScanned = 0;
 
-    // 3. For each slot with 2+ trades, run detectors
     for (const [slot, trades] of slotGroups) {
       if (trades.length < 2) continue;
       slotsScanned++;
 
-      // Map DB Trade to TradeInBlock format required by detectors
-      const tradesInBlock: TradeInBlock[] = trades.map((t, idx) => {
-        const [base] = t.pair.split("/");
-        // Determine side: if tokenOut matches base token symbol, it's a "buy"
-        const inSymbol = t.tokenIn.slice(0, 8);
-        const outSymbol = t.tokenOut.slice(0, 8);
-        const side: "buy" | "sell" = outSymbol === base || t.tokenOut.includes(base)
-          ? "buy"
-          : "sell";
+      const tradesInBlock: TradeInBlock[] = [];
+      const sorted = [...trades].sort(
+        (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+      );
 
-        return {
+      for (let idx = 0; idx < sorted.length; idx++) {
+        const t = sorted[idx];
+
+        const amountUsd = t.amountInUsd ? Number(t.amountInUsd) : null;
+        if (amountUsd === null || amountUsd < MIN_TRADE_USD) continue;
+
+        const side = determineSide(t.pair, t.tokenIn, t.tokenOut);
+        if (!side) continue;
+
+        const pricePerUnit =
+          amountUsd > 0 && Number(t.amountIn) > 0
+            ? amountUsd / Number(t.amountIn)
+            : 0;
+
+        tradesInBlock.push({
           txHash: t.signature,
-          txIndex: idx, // approximate ordering within block
+          txIndex: idx,
           wallet: t.wallet,
-          pairAddress: t.pair, // use pair name as grouping key
+          pairAddress: t.pair,
           side,
-          amountUsd: t.amountInUsd ? Number(t.amountInUsd) : 0,
-          price: t.amountOut && Number(t.amountIn) > 0
-            ? Number(t.amountOut) / Number(t.amountIn)
-            : 0,
+          amountUsd,
+          price: pricePerUnit,
           timestamp: Math.floor(t.timestamp.getTime() / 1000),
           blockNumber: Number(slot),
-        };
-      });
+        });
+      }
 
-      // Run all three detectors
+      if (tradesInBlock.length < 2) continue;
+
       const sandwiches = detectSandwich(tradesInBlock);
       const frontruns = detectFrontrun(tradesInBlock);
       const arbitrages = detectArbitrage(tradesInBlock);
-      const allEvents: MEVDetectionResult[] = [...sandwiches, ...frontruns, ...arbitrages];
+      const allEvents = [...sandwiches, ...frontruns, ...arbitrages].filter(
+        (e) => e.estimatedProfitUsd >= MIN_PROFIT_USD && e.severity !== "none"
+      );
 
       if (allEvents.length === 0) continue;
 
-      // 4. Write detected events to MEVEvent table
       for (const event of allEvents) {
         try {
-          // Use the target tx + type as a dedup key
           const existingCount = await prisma.mEVEvent.count({
             where: {
               relatedTxs: { has: event.targetTx },
@@ -109,9 +125,7 @@ export class MEVDetector extends BaseWorker {
               eventType: event.type,
               severity: event.severity,
               relatedTxs: [event.targetTx, ...event.attackerTxs],
-              estimatedProfit: event.estimatedProfitUsd > 0
-                ? event.estimatedProfitUsd
-                : null,
+              estimatedProfit: event.estimatedProfitUsd,
               victimWallet: event.victimWallet ?? null,
               description: event.description,
             },
@@ -129,4 +143,57 @@ export class MEVDetector extends BaseWorker {
       );
     }
   }
+
+  /**
+   * One-time startup: mark false-positive MEV events from the old broken
+   * detection logic as deprecated. Data is preserved but excluded from queries.
+   */
+  private async cleanupLegacyFalsePositives(): Promise<void> {
+    try {
+      const result = await prisma.mEVEvent.updateMany({
+        where: {
+          severity: { notIn: ["deprecated"] },
+          OR: [
+            { estimatedProfit: null },
+            { estimatedProfit: { lte: 0.5 } },
+            { severity: "none" },
+          ],
+        },
+        data: {
+          severity: "deprecated",
+          metadata: { legacy: true, reason: "false_positive_pre_v2_detection" },
+        },
+      });
+      if (result.count > 0) {
+        console.log(
+          `[${this.name}] Marked ${result.count} legacy false-positive MEV events as deprecated`
+        );
+      }
+    } catch (err) {
+      console.error(`[${this.name}] Legacy cleanup failed:`, err);
+    }
+  }
+}
+
+/**
+ * Determine trade side using MINT_SYMBOLS to resolve mint addresses
+ * to human-readable symbols, then compare against the pair's base token.
+ *
+ * Returns null if either token can't be resolved (trade is unusable for MEV analysis).
+ */
+function determineSide(
+  pair: string,
+  tokenIn: string,
+  tokenOut: string
+): "buy" | "sell" | null {
+  const [baseSymbol] = pair.split("/");
+  const inSymbol = MINT_SYMBOLS[tokenIn];
+  const outSymbol = MINT_SYMBOLS[tokenOut];
+
+  if (!inSymbol && !outSymbol) return null;
+
+  if (outSymbol === baseSymbol) return "buy";
+  if (inSymbol === baseSymbol) return "sell";
+
+  return null;
 }

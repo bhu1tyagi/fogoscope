@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { fogoConnection } from "@/lib/blockchain/connection";
 import { getOrFetch, getCached, CacheTier } from "@/lib/redis/cache";
 import { calculateExecutionScore } from "@/lib/analytics/scoring";
+import { VALID_MEV_WHERE } from "@/lib/analytics/mev";
 
 export const dynamic = "force-dynamic";
 
@@ -59,9 +60,9 @@ async function fetchMetrics(): Promise<DashboardMetrics> {
       _count: true,
     }),
 
-    // MEV events in last 24h
+    // MEV events in last 24h (excluding deprecated)
     prisma.mEVEvent.count({
-      where: { timestamp: { gte: twentyFourHoursAgo } },
+      where: { timestamp: { gte: twentyFourHoursAgo }, ...VALID_MEV_WHERE },
     }),
 
     // Block metrics over last 24h

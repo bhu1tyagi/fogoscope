@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { MEVSummary, MEVEvent } from "@/types/metrics";
 import prisma from "@/lib/db/prisma";
 import { getOrFetch, CacheTier } from "@/lib/redis/cache";
+import { VALID_MEV_WHERE } from "@/lib/analytics/mev";
 
 export const dynamic = "force-dynamic";
 
@@ -21,18 +22,18 @@ export async function GET() {
 
         const [recentEvents, typeCounts, totalTrades, heatmapRows] =
           await Promise.all([
-            // Recent MEV events (last 24h, max 50)
+            // Recent MEV events (last 24h, max 50, excluding deprecated)
             prisma.mEVEvent.findMany({
-              where: { timestamp: { gte: twentyFourHoursAgo } },
+              where: { timestamp: { gte: twentyFourHoursAgo }, ...VALID_MEV_WHERE },
               orderBy: { timestamp: "desc" },
               take: 50,
             }),
 
-            // Counts grouped by event type (last 24h)
+            // Counts grouped by event type (last 24h, excluding deprecated)
             prisma.mEVEvent.groupBy({
               by: ["eventType"],
-              where: { timestamp: { gte: twentyFourHoursAgo } },
-              _count: true,
+              where: { timestamp: { gte: twentyFourHoursAgo }, ...VALID_MEV_WHERE },
+              _count: { _all: true },
             }),
 
             // Total trades in last 24h (for percentage calculation)
@@ -40,7 +41,7 @@ export async function GET() {
               where: { timestamp: { gte: twentyFourHoursAgo } },
             }),
 
-            // Heatmap data (last 7 days)
+            // Heatmap data (last 7 days, excluding deprecated)
             prisma.$queryRaw<
               { day: number; hour: number; count: number }[]
             >`SELECT EXTRACT(DOW FROM timestamp)::int as day,
@@ -48,6 +49,7 @@ export async function GET() {
                      COUNT(*)::int as count
               FROM "MEVEvent"
               WHERE timestamp > ${sevenDaysAgo}
+                AND severity NOT IN ('none', 'deprecated')
               GROUP BY day, hour`,
           ]);
 
@@ -94,14 +96,14 @@ export async function GET() {
         // --- Aggregate counts from groupBy ---
         const countMap = new Map<string, number>();
         for (const group of typeCounts) {
-          countMap.set(group.eventType, group._count);
+          countMap.set(group.eventType, group._count._all);
         }
 
         const sandwichCount = countMap.get("sandwich") ?? 0;
         const frontrunCount = countMap.get("frontrun") ?? 0;
         const arbitrageCount = countMap.get("arbitrage") ?? 0;
         const totalEvents24h = typeCounts.reduce(
-          (sum, g) => sum + g._count,
+          (sum, g) => sum + g._count._all,
           0
         );
 
