@@ -1,12 +1,13 @@
 /**
  * Calculate slippage in basis points (bps).
  *
- * Positive result means execution was worse than expected (adverse slippage).
- * Negative result means execution was better than expected (positive slippage).
+ * Result is clamped to >= 0. Apparent "negative slippage" from cached-price
+ * estimation noise is indistinguishable from true price improvement, so we
+ * report it as 0 (perfect execution).
  *
  * @param expected - The expected price or output amount.
  * @param actual   - The actual price or output amount received.
- * @returns Slippage in basis points. 1 bps = 0.01%.
+ * @returns Slippage in basis points (>= 0). 1 bps = 0.01%.
  */
 export function calculateSlippage(expected: number, actual: number): number {
   if (expected === 0) {
@@ -14,20 +15,18 @@ export function calculateSlippage(expected: number, actual: number): number {
   }
 
   const slippage = ((expected - actual) / expected) * 10_000;
-  return Math.round(slippage * 100) / 100;
+  return Math.max(0, Math.round(slippage * 100) / 100);
 }
 
 /**
  * Calculate price impact as a percentage.
  *
- * Price impact = (inputUsd - outputUsd) / inputUsd * 100
- *
- * A positive value indicates the trade moved the price against the user.
- * A negative value indicates the user received more value than input (uncommon).
+ * Clamped to >= 0 for the same reason as slippage — cached-price noise
+ * can produce small negative values that aren't meaningful.
  *
  * @param inputUsd  - The USD value of the input tokens.
  * @param outputUsd - The USD value of the output tokens received.
- * @returns Price impact as a percentage (e.g. 0.5 = 0.5%).
+ * @returns Price impact as a percentage (>= 0, e.g. 0.5 = 0.5%).
  */
 export function calculatePriceImpact(
   inputUsd: number,
@@ -38,5 +37,5 @@ export function calculatePriceImpact(
   }
 
   const impact = ((inputUsd - outputUsd) / inputUsd) * 100;
-  return Math.round(impact * 10_000) / 10_000;
+  return Math.max(0, Math.round(impact * 10_000) / 10_000);
 }

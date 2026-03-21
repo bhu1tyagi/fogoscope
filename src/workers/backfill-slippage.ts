@@ -89,10 +89,10 @@ export async function backfillSlippage(): Promise<void> {
     const rawImpact = ((amountInUsd - amountOutUsd) / amountInUsd) * 100;
     const rawSlippage = rawImpact * 100;
 
-    if (rawSlippage < -100 || rawSlippage > 200) continue;
+    if (rawSlippage > 200) continue;
 
-    const slippageBps = Math.round(rawSlippage * 100) / 100;
-    const priceImpact = Math.round(rawImpact * 10000) / 10000;
+    const slippageBps = Math.round(Math.max(0, rawSlippage) * 100) / 100;
+    const priceImpact = Math.round(Math.max(0, rawImpact) * 10000) / 10000;
 
     try {
       await prisma.$executeRaw`

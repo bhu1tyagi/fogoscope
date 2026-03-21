@@ -168,7 +168,9 @@ function parseSwapTrades(
 
     // Slippage: compute from USD price impact.
     // Guards: both prices must be known, both USD amounts > $0.10,
-    // and result within -100 to +200 bps (realistic DEX range for low-liq pairs).
+    // and result within 0–200 bps. Negative values (price estimation noise
+    // from cached prices) are clamped to 0 since true "price improvement"
+    // can't be reliably distinguished from stale-price artifacts.
     let slippageBps: number | null = null;
     let priceImpact: number | null = null;
     if (
@@ -178,11 +180,10 @@ function parseSwapTrades(
       amountOutUsd !== null && amountOutUsd > 0.1
     ) {
       const rawImpact = ((amountInUsd - amountOutUsd) / amountInUsd) * 100;
-      const rawSlippage = rawImpact * 100; // convert % to bps
-      // Only keep if within realistic range — reject obvious price estimation errors
-      if (rawSlippage >= -100 && rawSlippage <= 200) {
-        priceImpact = Math.round(rawImpact * 10000) / 10000;
-        slippageBps = Math.round(rawSlippage * 100) / 100;
+      const rawSlippage = rawImpact * 100;
+      if (rawSlippage <= 200) {
+        priceImpact = Math.round(Math.max(0, rawImpact) * 10000) / 10000;
+        slippageBps = Math.round(Math.max(0, rawSlippage) * 100) / 100;
       }
     }
 
