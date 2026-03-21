@@ -27,6 +27,12 @@ export class PriceCollector extends BaseWorker {
     const now = new Date();
 
     // --- Source 1: DEX Screener (Fogo-native pairs) ---
+    // Collect the best quote-token derivation per address (highest-liquidity pair wins).
+    const derivedQuotes = new Map<
+      string,
+      { symbol: string; chain: string; priceUsd: number; liquidity: number; source: string }
+    >();
+
     try {
       const pairs: DexScreenerPair[] = await getFogoPairs();
 
@@ -46,9 +52,46 @@ export class PriceCollector extends BaseWorker {
             change24h: null,
             source: `dexscreener:${pair.dexId}`,
           });
+
+          // Derive quote token price: quoteUsd = baseUsd / priceNative
+          const priceNative = parseFloat(pair.priceNative);
+          if (isNaN(priceNative) || priceNative <= 0) continue;
+
+          const quotePriceUsd = priceUsd / priceNative;
+          if (!isFinite(quotePriceUsd) || quotePriceUsd <= 0) continue;
+
+          const quoteAddr = pair.quoteToken.address;
+          const pairLiq = pair.liquidity?.usd ?? 0;
+          const existing = derivedQuotes.get(quoteAddr);
+
+          if (!existing || pairLiq > existing.liquidity) {
+            derivedQuotes.set(quoteAddr, {
+              symbol: pair.quoteToken.symbol,
+              chain: pair.chainId,
+              priceUsd: quotePriceUsd,
+              liquidity: pairLiq,
+              source: `dexscreener:${pair.dexId}:derived`,
+            });
+          }
         }
+
+        // Append the best derivation for each quote token
+        for (const [addr, q] of derivedQuotes) {
+          priceRecords.push({
+            timestamp: now,
+            token: addr,
+            symbol: q.symbol,
+            chain: q.chain,
+            priceUsd: q.priceUsd,
+            volume24h: 0,
+            liquidity: q.liquidity,
+            change24h: null,
+            source: q.source,
+          });
+        }
+
         console.log(
-          `[${this.name}] DEX Screener: ${priceRecords.length} prices from ${pairs.length} pairs`
+          `[${this.name}] DEX Screener: ${priceRecords.length} prices (${derivedQuotes.size} derived quote tokens) from ${pairs.length} pairs`
         );
       } else {
         console.log(`[${this.name}] DEX Screener: no pairs returned`);

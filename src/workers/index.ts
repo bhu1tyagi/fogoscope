@@ -3,6 +3,7 @@ import { PriceCollector } from "./price-collector";
 import { BridgeMonitor } from "./bridge-monitor";
 import { TradeCollector } from "./trade-collector";
 import { MEVDetector } from "./mev-detector";
+import { backfillSlippage } from "./backfill-slippage";
 
 const workers = [
   new BlockMonitor(),
@@ -25,3 +26,10 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 workers.forEach((w) => w.start());
+
+// Run slippage backfill after a short delay to let PriceCollector populate prices first
+setTimeout(() => {
+  backfillSlippage().catch((err) =>
+    console.error("[BackfillSlippage] Failed:", err)
+  );
+}, 20_000);

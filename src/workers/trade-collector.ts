@@ -272,7 +272,7 @@ function determinePair(tokenIn: string, tokenOut: string): string {
   return `${inSym}/${outSym}`;
 }
 
-/** In-memory price cache: mint address → USD price */
+/** In-memory price cache: symbol (lowercase) → USD price */
 const priceCache = new Map<string, number>();
 let priceCacheAge = 0;
 
@@ -281,10 +281,9 @@ let priceCacheAge = 0;
  * Must be awaited before using the cache.
  */
 async function refreshPriceCache(): Promise<void> {
-  if (Date.now() - priceCacheAge < 15_000) return; // refresh at most every 15s
+  if (Date.now() - priceCacheAge < 15_000) return;
   priceCacheAge = Date.now();
 
-  // Try Redis first (PriceCollector writes as rt:price:{chain}:{mintAddress})
   for (const [mint, symbol] of Object.entries(MINT_SYMBOLS)) {
     try {
       const cached = await getCached<{ priceUsd: number }>(`rt:price:fogo:${mint}`);
@@ -296,7 +295,6 @@ async function refreshPriceCache(): Promise<void> {
       // ignore
     }
 
-    // Fallback: read latest price from DB
     try {
       const row = await prisma.tokenPrice.findFirst({
         where: { chain: "fogo", symbol },
